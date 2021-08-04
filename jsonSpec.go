@@ -38,6 +38,22 @@ type PACS008AccEnq struct {
 	Customeraccountnumber     string `json:"CustomerAccountNumber,omitempty"`
 }
 
+type PACS002AccEnq struct {
+	MessageId              string `json:"messageId"`
+	CreationDateTime       string `json:"creationDateTime"`
+	OriginalEndToEndId     string `json:"originalEndToEndId"`
+	OriginalTransactionId  string `json:"originalTransactionId"`
+	TransactionStatus      string `json:"transactionStatus"`
+	ReasonCode             string `json:"reasonCode"`
+	CreditorName           string `json:"creditorName"`
+	CreditorAccountId      string `json:"creditorAccountId"`
+	CreditorAccountType    string `json:"creditorAccountType"`
+	CreditorType           string `json:"creditorType"`
+	CreditorNationalId     string `json:"creditorNationalId"`
+	CreditorResidentStatus string `json:"creditorResidentStatus"`
+	CreditorTownName       string `json:"creditorTownName"`
+}
+
 type PACS028PayStatusReq struct {
 	TraceNum            string `json:"traceNum"`
 	ProcessingCode      string `json:"pcode"`
