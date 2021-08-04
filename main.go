@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"local/jul/bankiso/iso"
@@ -16,6 +17,10 @@ import (
 // type tempDocumentXML interface{}
 type ChannelInput struct {
 	BusMsg BusMsg `xml:"BusMsg" json:"BusMsg"`
+}
+
+type inMsg struct {
+	MsgDefId string `json:"messageDefinitionId"`
 }
 
 type BusMsg struct {
@@ -38,31 +43,33 @@ func main() {
 	if err != nil {
 		fmt.Println("Err")
 	}
-	jsonReq := PACS008AccEnq{}
-	err = json.Unmarshal(content, &jsonReq)
-	if err != nil {
-		fmt.Println("Err")
-	}
 
-	bodyRequest := convJsonIso(jsonReq)
+	msgDefId := getMsgDefId(content)
+
+	bodyRequest, err := convJsonIso(content, msgDefId)
+	if err != nil {
+		log.Fatal("conv error:", err)
+	}
 
 	request := hitBiller(bodyRequest)
 
-	requestMessageJson := ChannelInput{}
-	err = json.Unmarshal(request, &requestMessageJson)
+	response := ChannelInput{}
+	err = json.Unmarshal(request, &response)
 
 	if err != nil {
 		log.Fatal("json unmarshall err:", err)
 	}
 
-	response := convIsoJson(requestMessageJson)
+	responseJson, err := convIsoJson(response)
+	if err != nil {
+		log.Fatal("Conv error:", err)
+	}
 
-	result, _ := json.Marshal(response)
-	fmt.Println(string(result))
+	fmt.Println(string(responseJson))
 
 }
 
-func convIsoJson(jsonRes ChannelInput) PACS002AccEnq {
+func convIsoJson(jsonRes ChannelInput) ([]byte, error) {
 	MsgDefIdn := string(*jsonRes.BusMsg.AppHdr.MessageDefinitionIdentifier)
 	log.Println("MsgDefIdn:", MsgDefIdn)
 	val, ok := iso.ISO20022Registry[MsgDefIdn]
@@ -73,28 +80,58 @@ func convIsoJson(jsonRes ChannelInput) PACS002AccEnq {
 	if err != nil {
 		log.Fatal("documentType unmarshall err:", err)
 	}
-	response := BusMsgAfterUnmarshal{jsonRes.BusMsg.AppHdr, &val}
-
-	jsonResConv := PACS002AccEnq{}
-	jsonResConv.MessageId = string(*response.AppHdr.BusinessMessageIdentifier)
-	jsonResConv.CreationDateTime = string(*response.AppHdr.CreationDate)
-
-	result, _ := json.Marshal(val)
-
-	res := new(pacs.Document00200110)
-	err = json.Unmarshal(result, &res)
-	if err != nil {
-		log.Fatal("documentType unmarshall err:", err)
+	// response := BusMsgAfterUnmarshal{jsonRes.BusMsg.AppHdr, &val}
+	var result []byte
+	err = nil
+	switch MsgDefIdn {
+	case "pacs.002.001.10":
+		jsonResConv := convertAccEnqIso(jsonRes.BusMsg.AppHdr, val)
+		result, err = json.Marshal(jsonResConv)
+	default:
+		err = errors.New("undefined message definition identifier")
 	}
-
-	jsonResConv.OriginalEndToEndId = string(*res.Message.TransactionInformationAndStatus[0].OrgnlEndToEndId)
-
-	return jsonResConv
-
+	return result, err
 }
 
-func convJsonIso(jsonRes PACS008AccEnq) []byte {
+func convJsonIso(content []byte, msgDefId string) ([]byte, error) {
+	var result []byte
+	var err error
+	switch msgDefId {
+	case "pacs.008.001.08":
+		jsonReq := PACS008AccEnq{}
+		err := json.Unmarshal(content, &jsonReq)
+		if err != nil {
+			fmt.Println("Err")
+		}
+		result = convertAccEnqJson(jsonReq)
+		err = nil
+	default:
+		err = errors.New("undefined message definition identifier")
+	}
+	return result, err
+}
 
+func convertAccEnqIso(headerMsg *head.BusinessApplicationHeaderV01, documentMsg interface{}) PACS002AccEnq {
+	jsonResConv := PACS002AccEnq{}
+	bodyMsg := documentMsg.(*pacs.Document00200110)
+	jsonResConv.MessageId = string(*headerMsg.MessageDefinitionIdentifier)
+	jsonResConv.CreationDateTime = string(*headerMsg.CreationDate)
+	jsonResConv.OriginalEndToEndId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlEndToEndId)
+	jsonResConv.OriginalTransactionId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlTxId)
+	jsonResConv.TransactionStatus = string(*bodyMsg.Message.TransactionInformationAndStatus[0].TxSts)
+	jsonResConv.ReasonCode = string(*bodyMsg.Message.TransactionInformationAndStatus[0].StsRsnInf[0].Rsn.Proprietary)
+	jsonResConv.CreditorName = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlTxRef.Cdtr.Pty.Nm)
+	jsonResConv.CreditorAccountId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlTxRef.CdtrAcct.Id.Other.Identification)
+	jsonResConv.CreditorAccountType = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlTxRef.CdtrAcct.Tp.Proprietary)
+	jsonResConv.CreditorType = string(*bodyMsg.Message.TransactionInformationAndStatus[0].SplmtryData[0].Envlp.Cdtr.Tp)
+	jsonResConv.CreditorNationalId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].SplmtryData[0].Envlp.Cdtr.Id)
+	jsonResConv.CreditorResidentStatus = string(*bodyMsg.Message.TransactionInformationAndStatus[0].SplmtryData[0].Envlp.Cdtr.RsdntSts)
+	jsonResConv.CreditorTownName = string(*bodyMsg.Message.TransactionInformationAndStatus[0].SplmtryData[0].Envlp.Cdtr.TwnNm)
+
+	return jsonResConv
+}
+
+func convertAccEnqJson(jsonRes PACS008AccEnq) []byte {
 	head := new(head.BusinessApplicationHeaderV01)
 	head.SetBusinessMessageIdentifier(jsonRes.BusinessMessageId)
 	head.SetMessageDefinitionIdentifier(jsonRes.MessageDefinitionId)
@@ -156,9 +193,19 @@ func hitBiller(msg []byte) []byte {
 	if err != nil {
 		log.Println(err.Error())
 	}
+
 	defer resp.Body.Close()
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		log.Println(err.Error())
 	}
+
 	return body
+}
+
+func getMsgDefId(content []byte) string {
+	res := inMsg{}
+	json.Unmarshal(content, &res)
+	return res.MsgDefId
 }
