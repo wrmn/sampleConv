@@ -21,6 +21,7 @@ type ChannelInput struct {
 
 type inMsg struct {
 	MsgDefId string `json:"messageDefinitionId"`
+	TraceNum string `json:"traceNum"`
 }
 
 type BusMsg struct {
@@ -44,7 +45,7 @@ func main() {
 		fmt.Println("Err")
 	}
 
-	msgDefId := getMsgDefId(content)
+	msgDefId, traceNum := getMsgDefId(content)
 
 	bodyRequest, err := convJsonIso(content, msgDefId)
 	if err != nil {
@@ -60,7 +61,7 @@ func main() {
 		log.Fatal("json unmarshall err:", err)
 	}
 
-	responseJson, err := convIsoJson(response)
+	responseJson, err := convIsoJson(response, traceNum)
 	if err != nil {
 		log.Fatal("Conv error:", err)
 	}
@@ -69,7 +70,7 @@ func main() {
 
 }
 
-func convIsoJson(jsonRes ChannelInput) ([]byte, error) {
+func convIsoJson(jsonRes ChannelInput, traceNum string) ([]byte, error) {
 	MsgDefIdn := string(*jsonRes.BusMsg.AppHdr.MessageDefinitionIdentifier)
 	log.Println("MsgDefIdn:", MsgDefIdn)
 	val, ok := iso.ISO20022Registry[MsgDefIdn]
@@ -80,12 +81,12 @@ func convIsoJson(jsonRes ChannelInput) ([]byte, error) {
 	if err != nil {
 		log.Fatal("documentType unmarshall err:", err)
 	}
-	// response := BusMsgAfterUnmarshal{jsonRes.BusMsg.AppHdr, &val}
+	response := BusMsgAfterUnmarshal{jsonRes.BusMsg.AppHdr, &val}
 	var result []byte
 	err = nil
 	switch MsgDefIdn {
 	case "pacs.002.001.10":
-		jsonResConv := convertAccEnqIso(jsonRes.BusMsg.AppHdr, val)
+		jsonResConv := convertAccEnqIso(response, traceNum)
 		result, err = json.Marshal(jsonResConv)
 	default:
 		err = errors.New("undefined message definition identifier")
@@ -98,7 +99,7 @@ func convJsonIso(content []byte, msgDefId string) ([]byte, error) {
 	var err error
 	switch msgDefId {
 	case "pacs.008.001.08":
-		jsonReq := PACS008AccEnq{}
+		jsonReq := AccountEnquiryReq{}
 		err := json.Unmarshal(content, &jsonReq)
 		if err != nil {
 			fmt.Println("Err")
@@ -111,11 +112,21 @@ func convJsonIso(content []byte, msgDefId string) ([]byte, error) {
 	return result, err
 }
 
-func convertAccEnqIso(headerMsg *head.BusinessApplicationHeaderV01, documentMsg interface{}) PACS002AccEnq {
-	jsonResConv := PACS002AccEnq{}
-	bodyMsg := documentMsg.(*pacs.Document00200110)
-	jsonResConv.MessageId = string(*headerMsg.MessageDefinitionIdentifier)
-	jsonResConv.CreationDateTime = string(*headerMsg.CreationDate)
+// headerMsg *head.BusinessApplicationHeaderV01, documentMsg interface{}
+func convertAccEnqIso(msg BusMsgAfterUnmarshal, traceNum string) AccountEnquiryResp {
+	jsonResConv := AccountEnquiryResp{}
+	bodyM := *msg.Document
+	bodyMsg := bodyM.(*pacs.Document00200110)
+	headerMsg := *msg.AppHdr
+	jsonResConv.TraceNum = traceNum
+	jsonResConv.FromId = string(*headerMsg.From.FinancialInstitutionIdentification.FinancialInstitutionIdentification.Other.Identification)
+	jsonResConv.ToId = string(*headerMsg.To.FinancialInstitutionIdentification.FinancialInstitutionIdentification.Other.Identification)
+	jsonResConv.BusinessMessageId = string(*headerMsg.BusinessMessageIdentifier)
+	jsonResConv.MessageDefinitionId = string(*headerMsg.MessageDefinitionIdentifier)
+	// jsonResConv.BusinessServiceId = string(*headerMsg.BusinessService)
+	jsonResConv.CreationDate = string(*headerMsg.CreationDate)
+	jsonResConv.MessageId = string(*bodyMsg.Message.GroupHeader.MsgId)
+	jsonResConv.CreationDateTime = string(*bodyMsg.Message.GroupHeader.CreDtTm)
 	jsonResConv.OriginalEndToEndId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlEndToEndId)
 	jsonResConv.OriginalTransactionId = string(*bodyMsg.Message.TransactionInformationAndStatus[0].OrgnlTxId)
 	jsonResConv.TransactionStatus = string(*bodyMsg.Message.TransactionInformationAndStatus[0].TxSts)
@@ -131,11 +142,14 @@ func convertAccEnqIso(headerMsg *head.BusinessApplicationHeaderV01, documentMsg 
 	return jsonResConv
 }
 
-func convertAccEnqJson(jsonRes PACS008AccEnq) []byte {
+func convertAccEnqJson(jsonRes AccountEnquiryReq) []byte {
 	head := new(head.BusinessApplicationHeaderV01)
 	head.SetBusinessMessageIdentifier(jsonRes.BusinessMessageId)
 	head.SetMessageDefinitionIdentifier(jsonRes.MessageDefinitionId)
 	head.SetCreationDate(jsonRes.CreationDate)
+	head.SetBusinessService(jsonRes.BusinessServiceId)
+	head.SetCopyDuplicate(jsonRes.CopyDuplicate)
+	head.SetPossibleDuplicate(jsonRes.PossibleDuplicate)
 
 	headFr := head.AddFrom().AddFinancialInstitutionIdentification().AddFinancialInstitutionIdentification().AddOther()
 	headFr.SetIdentification(jsonRes.FromId)
@@ -147,43 +161,43 @@ func convertAccEnqJson(jsonRes PACS008AccEnq) []byte {
 	resAdd := res.AddMessage()
 
 	resGrpHeader := resAdd.AddGroupHeader()
-	resGrpHeader.SetMsgId(jsonRes.Messageid)
-	resGrpHeader.SetCreDtTm(jsonRes.Creationdatetime)
-	resGrpHeader.SetNbOfTxs(jsonRes.Numbertransaction)
+	resGrpHeader.SetMsgId(jsonRes.MessageId)
+	resGrpHeader.SetCreDtTm(jsonRes.CreationDateTime)
+	resGrpHeader.SetNbOfTxs(jsonRes.NumberTransaction)
 
 	resSttlntInfo := resGrpHeader.AddSttlmInf()
-	resSttlntInfo.SetSttlmMtd(jsonRes.Settlementmethod)
+	resSttlntInfo.SetSttlmMtd(jsonRes.SettlementMethod)
 
 	resCtf := resAdd.AddCreditTransferTransactionInformation()
 	resCtf.AddDbtr()
 	resCtf.AddCdtr()
-	resCtf.SetChrgBr(jsonRes.Chargebearer)
+	resCtf.SetChrgBr(jsonRes.ChargeBearer)
 
 	resPayment := resCtf.AddPmtId()
-	resPayment.SetEndToEndId(jsonRes.Endtoendid)
-	resPayment.SetTxId(jsonRes.Transactionid)
+	resPayment.SetEndToEndId(jsonRes.EndToEndId)
+	resPayment.SetTxId(jsonRes.TransactionId)
 
 	resDbtr := resCtf.AddDbtrAgt()
 	resDbtrFinInstnId := resDbtr.AddFinInstnId()
 	resDbtrOthr := resDbtrFinInstnId.AddOthr()
-	resDbtrOthr.SetIdentification(jsonRes.Debtorbankid)
+	resDbtrOthr.SetIdentification(jsonRes.DebtorBankId)
 
 	resCdtr := resCtf.AddCdtrAgt()
 	resCdtrFinInstnId := resCdtr.AddFinInstnId()
 	resCdtrOthr := resCdtrFinInstnId.AddOthr()
-	resCdtrOthr.SetIdentification(jsonRes.Debtorbankid)
+	resCdtrOthr.SetIdentification(jsonRes.DebtorBankId)
 
-	resCtf.SetInterbankSettlementAmount(jsonRes.Interbanksettlementamount, jsonRes.Currencycode)
+	resCtf.SetInterbankSettlementAmount(jsonRes.InterBankSettlementAmount, jsonRes.CurrencyCode)
 
-	a, _ := json.Marshal(res)
+	body, _ := json.Marshal(res)
 
 	msg := ChannelInput{}
 	msg.BusMsg.AppHdr = head
-	msg.BusMsg.Document = a
+	msg.BusMsg.Document = body
 
-	b, _ := json.Marshal(msg)
+	fullMessage, _ := json.Marshal(msg)
 
-	return b
+	return fullMessage
 }
 
 func hitBiller(msg []byte) []byte {
@@ -204,8 +218,8 @@ func hitBiller(msg []byte) []byte {
 	return body
 }
 
-func getMsgDefId(content []byte) string {
+func getMsgDefId(content []byte) (string, string) {
 	res := inMsg{}
 	json.Unmarshal(content, &res)
-	return res.MsgDefId
+	return res.MsgDefId, res.TraceNum
 }
